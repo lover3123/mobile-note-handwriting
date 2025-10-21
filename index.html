@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+   <title>Magnified Handwriting Note</title>
+   
+   <!-- PWA Manifest and Theme -->
+   <link rel="manifest" href="manifest.json">
+   <meta name="theme-color" content="#ffffff">
+
+   <!-- iOS Specific PWA Tags -->
+   <meta name="apple-mobile-web-app-capable" content="yes">
+   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+   <meta name="apple-mobile-web-app-title" content="Note Pad">
+   <link rel="apple-touch-icon" href="icons/icon-192x192.png">
+
+   <script src="https://cdn.tailwindcss.com"></script>
+   <script>
+       tailwind.config = {
+           theme: {
+               extend: {
+                   fontFamily: {
+                       sans: ['Inter', 'sans-serif'],
+                   },
+               }
+           }
+       }
+   </script>
+   <style>
+       /* Base Styling - Ensures full viewport usage without unnecessary outer scroll */
+       body, html {
+           height: 100%;
+           margin: 0;
+           padding: 0;
+       }
+       
+       body {
+           min-height: 100vh;
+           display: flex;
+           flex-direction: column;
+           align-items: center;
+           background-color: #f0f2f5;
+           user-select: none;
+       }
+
+       /* App Container - Manages overall layout */
+       .app-container {
+           width: 100%;
+           max-width: 900px;
+           display: flex;
+           flex-direction: column;
+           gap: 0.75rem;
+           flex-grow: 1;
+           position: relative;
+           padding: 0.5rem;
+           padding-bottom: 0;
+           overflow: hidden;
+       }
+
+       /* Header/Status */
+       .app-header {
+           flex-shrink: 0;
+           padding-top: 0.5rem;
+           padding-bottom: 0.5rem;
+       }
+
+       /* --- Main Note View (Flexible Height) --- */
+       #main-view-container {
+           flex-grow: 1;
+           min-height: 300px;
+           background-color: white;
+           border-radius: 0.5rem;
+           box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+           padding: 0.25rem;
+           overflow: hidden;
+           display: flex;
+           flex-direction: column;
+       }
+
+       /* Scroll Container for the canvas */
+       #main-note-scroll-container {
+           flex-grow: 1; /* Takes all remaining height in main-view-container */
+           overflow: auto;
+           position: relative;
+           border: 1px solid #d1d5db;
+           border-radius: 0.25rem;
+       }
+
+       /* Canvas Stacking */
+       #canvas-stack {
+           position: relative;
+       }
+       #mainCanvas, #cursorCanvas {
+           position: absolute;
+           top: 0;
+           left: 0;
+       }
+       #mainCanvas { z-index: 1; }
+       #cursorCanvas { z-index: 2; }
+
+       /* --- Fixed Bottom Toolbar (Guaranteed Visibility) --- */
+       #tools-container {
+           flex-shrink: 0;
+           width: 100%;
+           padding: 0.75rem;
+           background-color: white;
+           border-top: 1px solid #e5e7eb;
+           border-radius: 0.75rem;
+           box-shadow: 0 -4px 6px -1px rgba(0, 0, 0, 0.1);
+       }
+
+       /* --- Floating Zoom Pad (Draggable Element) --- */
+       #floatingZoomPad {
+           position: fixed;
+           bottom: 10px;
+           width: 95%;
+           max-width: 450px;
+           background-color: #ffffff;
+           border-radius: 1rem;
+           box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+           z-index: 100;
+           cursor: move;
+           padding: 0;
+           display: none;
+       }
+       
+       #zoom-pad-container {
+           padding: 0.75rem;
+           border-radius: 1rem;
+           background-color: #fff;
+       }
+       
+       #drag-handle {
+           height: 15px;
+           cursor: grab;
+           border-top-left-radius: 1rem;
+           border-top-right-radius: 1rem;
+           background-color: #e5e7eb;
+           display: flex;
+           justify-content: center;
+           align-items: center;
+       }
+       #drag-bar {
+           width: 40px;
+           height: 4px;
+           background-color: #9ca3af;
+           border-radius: 2px;
+       }
+
+       #zoomCanvas {
+           background-color: #f9f9ff;
+           border: 2px solid #3b82f6;
+           cursor: crosshair;
+           touch-action: none;
+           width: 100%;
+           height: 150px;
+           border-radius: 0.5rem;
+       }
+
+       /* --- Utility/Component Styling --- */
+       .tool-button {
+           transition: all 0.15s;
+           box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+           min-height: 44px;
+       }
+       .active {
+           box-shadow: inset 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+           border: 3px solid #3b82f6;
+       }
+       .loader {
+           border: 4px solid #f3f3f3;
+           border-top: 4px solid #3b82f6;
+           border-radius: 50%;
+           width: 20px;
+           height: 20px;
+           animation: spin 1s linear infinite;
+       }
+       @keyframes spin {
+           0% { transform: rotate(0deg); }
+           100% { transform: rotate(360deg); }
+       }
+   </style>
+</head>
+<body>
+
+   <div class="app-container">
+       <!-- HEADER & STATUS -->
+       <div class="app-header">
+           <h1 class="text-2xl font-bold text-gray-800 text-center">Magnified Note Pad</h1>
+           <div id="statusMessage" class="text-sm text-center text-gray-600">
+               Initializing...
+           </div>
+       </div>
+
+       <!-- MAIN NOTE VIEW (Flexible Height) -->
+       <div id="main-view-container">
+           <h2 class="text-lg font-semibold mb-1 text-gray-700 p-2">Main Note (Tap to Set Cursor)</h2>
+           <div id="main-note-scroll-container">
+               <!-- Wrapper for absolute positioning -->
+               <div id="canvas-stack" style="width: 850px; height: 3000px;">
+                   <canvas id="mainCanvas" width="850" height="3000" class="block"></canvas>
+                   <canvas id="cursorCanvas" width="850" height="3000" class="block"></canvas>
+               </div>
+           </div>
+       </div>
+
+       <!-- 2. TOOLBAR AND ACTIONS (Fixed at bottom - Guaranteed Visibility) -->
+       <div id="tools-container">
+           <div class="flex space-x-3 mb-2">
+               <button id="showPadButton" class="flex-1 px-4 py-3 text-white bg-indigo-500 rounded-lg font-semibold hover:bg-indigo-600 tool-button text-base flex items-center justify-center">
+                   Show Writing Pad
+               </button>
+           </div>
+           
+           <div class="flex space-x-3">
+               <button id="saveButton" class="flex-1 px-4 py-2 text-white bg-green-500 rounded-lg font-semibold hover:bg-green-600 tool-button text-sm flex items-center justify-center">
+                   <span id="save-text">Save Note as Image</span>
+                   <div id="save-loader" class="loader hidden ml-2"></div>
+               </button>
+               <button id="clearButton" class="flex-1 px-4 py-2 text-gray-700 bg-gray-200 rounded-lg font-semibold hover:bg-gray-300 tool-button text-sm">Clear Note</button>
+           </div>
+       </div>
+   </div>
+
+   <!-- FLOATING ZOOM PAD (Hidden by default - All Writing Tools Consolidated Here) -->
+   <div id="floatingZoomPad">
+       <div id="drag-handle" title="Drag to move pad">
+           <div id="drag-bar"></div>
+       </div>
+       <div id="zoom-pad-container">
+           <!-- HIDE BUTTON -->
+           <button id="hidePadButton" class="w-full mb-3 px-4 py-2 text-white bg-gray-700 rounded-lg font-bold text-sm hover:bg-gray-800 transition duration-200 shadow-md">
+               Hide Writing Pad
+           </button>
+           
+           <!-- Pen Colors -->
+           <div class="flex flex-col gap-2 mb-3">
+               <div id="pen-selector" class="flex justify-center space-x-3 p-1 rounded-full bg-gray-100">
+                   <button data-color="#000000" class="tool-button w-10 h-10 rounded-full bg-black active" title="Black Pen"></button>
+                   <button data-color="#3b82f6" class="tool-button w-10 h-10 rounded-full bg-blue-500" title="Blue Pen"></button>
+                   <button data-color="#ef4444" class="tool-button w-10 h-10 rounded-full bg-red-500" title="Red Pen"></button>
+               </div>
+           </div>
+
+           <h2 class="text-sm font-semibold mb-1 text-gray-700 text-center">Zoom Writing Pad</h2>
+           <canvas id="zoomCanvas" width="300" height="150" class="w-full block"></canvas>
+           
+           <!-- ACTIONS BELOW WRITING PAD -->
+           <div class="mt-3 flex space-x-2">
+               <!-- ERASER BUTTON -->
+               <button id="zoomEraserButton" class="tool-button flex-shrink-0 w-12 h-12 rounded-lg bg-yellow-400 flex items-center justify-center" title="Eraser Mode on Pad">
+                   <svg class="w-6 h-6 text-gray-800" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3m-2 4h8"></path></svg>
+               </button>
+               
+               <!-- TRANSFER BUTTON -->
+               <button id="nextSegmentButton" class="flex-grow px-4 py-3 text-white bg-blue-600 rounded-lg font-bold text-base hover:bg-blue-700 tool-button transition duration-200 shadow-md">
+                   Transfer & Continue Writing
+                   <span class="text-xs font-normal block pt-1">(Auto-spacing & Line Break)</span>
+               </button>
+           </div>
+       </div>
+   </div>
+
+   <script>
+       // --- Global Variables and Setup ---
+       
+       // --- Canvas and Contexts ---
+       const mainCanvas = document.getElementById('mainCanvas');
+       const mainCtx = mainCanvas.getContext('2d');
+       const cursorCanvas = document.getElementById('cursorCanvas');
+       const cursorCtx = cursorCanvas.getContext('2d');
+       const zoomCanvas = document.getElementById('zoomCanvas');
+       const zoomCtx = zoomCanvas.getContext('2d');
+       const scrollContainer = document.getElementById('main-note-scroll-container');
+       const floatingPad = document.getElementById('floatingZoomPad');
+       const dragHandle = document.getElementById('drag-handle');
+
+       // --- UI Elements ---
+       const statusMessage = document.getElementById('statusMessage');
+       const saveButton = document.getElementById('saveButton');
+       const saveText = document.getElementById('save-text');
+       const saveLoader = document.getElementById('save-loader');
+       const nextSegmentButton = document.getElementById('nextSegmentButton');
+       const showPadButton = document.getElementById('showPadButton');
+       const hidePadButton = document.getElementById('hidePadButton');
+       const zoomEraserButton = document.getElementById('zoomEraserButton');
+
+       // --- Drawing State ---
+       let isDrawing = false;
+       let lastX = 0;
+       let lastY = 0;
+       let zoomPenColor = '#000000';
+       let zoomPenMode = 'pen';
+       let currentLineWidth = 5;
+
+       // --- Magnification Feature State ---
+       const SCALE_FACTOR = 3;
+       const PADDING_MAIN = 10;
+       const DESTINATION_HEIGHT = zoomCanvas.height / SCALE_FACTOR;
+       
+       // A4 Page & Line Management
+       const LEFT_MARGIN = 50;
+       const RIGHT_MARGIN = 20;
+       const LINE_HEIGHT = 80;
+       const TOP_PADDING = 20;
+       const LINE_END_X = mainCanvas.width - RIGHT_MARGIN;
+       const PAGE_COLOR = '#ffffff';
+
+       let currentDrawX = LEFT_MARGIN;
+       let currentDrawY = TOP_PADDING;
+       let isZoomPadVisible = false;
+
+       // --- Drag State ---
+       let isDragging = false;
+       let dragOffsetX, dragOffsetY;
+
+       // --- Utility Functions ---
+       
+       /** Draws the ruled lines on the main note canvas. */
+       function drawRuledLines(ctx) {
+           ctx.fillStyle = PAGE_COLOR;
+           ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+           ctx.strokeStyle = 'rgba(239, 68, 68, 0.7)';
+           ctx.lineWidth = 1;
+           ctx.beginPath();
+           ctx.moveTo(LEFT_MARGIN - 5, 0);
+           ctx.lineTo(LEFT_MARGIN - 5, ctx.canvas.height);
+           ctx.stroke();
+
+           ctx.strokeStyle = 'rgba(200, 200, 200, 0.5)';
+           ctx.lineWidth = 1;
+           for (let y = TOP_PADDING + LINE_HEIGHT; y < ctx.canvas.height; y += LINE_HEIGHT) {
+               ctx.beginPath();
+               ctx.moveTo(LEFT_MARGIN, y);
+               ctx.lineTo(LINE_END_X, y);
+               ctx.stroke();
+           }
+       }
+
+       /** Draws the current cursor position on the transparent overlay canvas. */
+       function drawCursor() {
+           cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+           cursorCtx.save();
+           cursorCtx.strokeStyle = '#3b82f6';
+           cursorCtx.lineWidth = 2;
+           cursorCtx.setLineDash([8, 8]);
+           const lineYCenter = currentDrawY + (LINE_HEIGHT / 2);
+           cursorCtx.beginPath();
+           cursorCtx.moveTo(currentDrawX, lineYCenter - (DESTINATION_HEIGHT / 2));
+           cursorCtx.lineTo(currentDrawX, lineYCenter + (DESTINATION_HEIGHT / 2));
+           cursorCtx.stroke();
+           cursorCtx.restore();
+       }
+
+       /** Shows a brief status message on the UI */
+       function updateStatus(message, isError = false) {
+           statusMessage.textContent = message;
+           statusMessage.classList.remove('text-red-500', 'text-gray-600', 'text-green-600');
+           statusMessage.classList.add(isError ? 'text-red-500' : 'text-gray-600');
+            if (message.includes('Ready') || message.includes('Note downloaded')) {
+               statusMessage.classList.add('text-green-600');
+           }
+       }
+
+       /** Clears the canvas entirely (and redraws lines) */
+       function clearCanvas(ctx, color = PAGE_COLOR) {
+           if (ctx === mainCtx) {
+               drawRuledLines(ctx);
+           } else {
+                ctx.fillStyle = color;
+                ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+           }
+       }
+
+       /** Auto-Scrolls the main note view to position the current line. */
+       function autoScrollToCursor() {
+           const containerHeight = scrollContainer.clientHeight;
+           const lineBottomY = currentDrawY + LINE_HEIGHT;
+           const SCROLL_BUFFER = 50;
+           const targetScrollTop = lineBottomY - containerHeight + SCROLL_BUFFER;
+           const finalScroll = Math.max(0, targetScrollTop);
+
+           scrollContainer.scroll({
+               top: finalScroll,
+               behavior: 'smooth'
+           });
+
+           const scrollLeftTarget = currentDrawX - (scrollContainer.clientWidth / 2);
+           scrollContainer.scrollLeft = Math.max(0, scrollLeftTarget);
+           drawCursor();
+       }
+
+       /** Toggles the visibility of the floating writing pad */
+       function toggleZoomPad(show = null) {
+           if (show === null) {
+               show = !isZoomPadVisible;
+           }
+           isZoomPadVisible = show;
+
+           if (isZoomPadVisible) {
+               floatingPad.style.display = 'block';
+               showPadButton.style.display = 'none';
+               initializeCanvasDimensions();
+               const viewportWidth = window.innerWidth;
+               const padWidth = floatingPad.offsetWidth;
+               floatingPad.style.left = (viewportWidth / 2) - (padWidth / 2) + 'px';
+               floatingPad.style.bottom = '10px';
+               floatingPad.style.top = '';
+               floatingPad.style.removeProperty('transform');
+               autoScrollToCursor();
+           } else {
+               floatingPad.style.display = 'none';
+               showPadButton.style.display = 'flex';
+           }
+           clearCanvas(zoomCtx, '#f9f9ff');
+       }
+
+       /** Scans the canvas pixel data to find the horizontal bounding box of all non-white ink. */
+       function getInkBoundingBox(ctx, canvas) {
+           const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+           const data = imageData.data;
+           let minX = canvas.width, maxX = 0, hasInk = false;
+
+           for (let x = 0; x < canvas.width; x++) {
+               for (let y = 0; y < canvas.height; y++) {
+                   const index = (y * canvas.width + x) * 4;
+                   if (data[index] < 240 || data[index+1] < 240 || data[index+2] < 240 || data[index+3] < 255) {
+                       minX = Math.min(minX, x);
+                       maxX = Math.max(maxX, x);
+                       hasInk = true;
+                   }
+               }
+           }
+           if (!hasInk) return { minX: 0, maxX: 0, hasInk: false };
+           return { minX, maxX: maxX + 1, hasInk: true };
+       }
+
+       // --- Drawing Logic (Applied only to zoomCanvas) ---
+
+       function getCanvasCoords(e, canvas) {
+           const rect = canvas.getBoundingClientRect();
+           let clientX, clientY;
+           if (e.touches && e.touches.length > 0) {
+               clientX = e.touches[0].clientX;
+               clientY = e.touches[0].clientY;
+           } else {
+               clientX = e.clientX;
+               clientY = e.clientY;
+           }
+           const scaleX = canvas.width / rect.width;
+           const scaleY = canvas.height / rect.height;
+           return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+       }
+
+       function startDrawing(e) {
+           if (e.target !== zoomCanvas) return;
+           e.preventDefault();
+           isDrawing = true;
+           const coords = getCanvasCoords(e, zoomCanvas);
+           [lastX, lastY] = [coords.x, coords.y];
+           zoomCtx.globalCompositeOperation = zoomPenMode === 'eraser' ? 'destination-out' : 'source-over';
+           currentLineWidth = zoomPenMode === 'eraser' ? 20 : 5;
+       }
+
+       function draw(e) {
+           if (!isDrawing) return;
+           e.preventDefault();
+           const coords = getCanvasCoords(e, zoomCanvas);
+           zoomCtx.beginPath();
+           zoomCtx.moveTo(lastX, lastY);
+           zoomCtx.lineTo(coords.x, coords.y);
+           zoomCtx.strokeStyle = zoomPenMode === 'eraser' ? '#f9f9ff' : zoomPenColor;
+           zoomCtx.lineWidth = currentLineWidth;
+           zoomCtx.lineCap = 'round';
+           zoomCtx.lineJoin = 'round';
+           zoomCtx.stroke();
+           [lastX, lastY] = [coords.x, coords.y];
+       }
+
+       function stopDrawing() {
+           isDrawing = false;
+           zoomCtx.globalCompositeOperation = 'source-over';
+       }
+
+       zoomCanvas.addEventListener('mousedown', startDrawing);
+       zoomCanvas.addEventListener('mousemove', draw);
+       zoomCanvas.addEventListener('mouseup', stopDrawing);
+       zoomCanvas.addEventListener('mouseout', stopDrawing);
+       zoomCanvas.addEventListener('touchstart', startDrawing, { passive: false });
+       zoomCanvas.addEventListener('touchmove', draw, { passive: false });
+       zoomCanvas.addEventListener('touchend', stopDrawing);
+
+       // --- Draggability Logic for Floating Pad ---
+
+       function getClientCoords(e) {
+           return e.touches && e.touches.length > 0 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : { x: e.clientX, y: e.clientY };
+       }
+
+       function startDrag(e) {
+           if (e.target !== dragHandle && e.target.parentNode !== dragHandle) return;
+           isDragging = true;
+           const coords = getClientCoords(e);
+           const rect = floatingPad.getBoundingClientRect();
+           dragOffsetX = coords.x - rect.left;
+           dragOffsetY = coords.y - rect.top;
+           floatingPad.style.transition = 'none';
+           dragHandle.style.cursor = 'grabbing';
+       }
+
+       function onDrag(e) {
+           if (!isDragging) return;
+           const coords = getClientCoords(e);
+           const parentRect = document.body.getBoundingClientRect();
+           let newX = coords.x - dragOffsetX;
+           let newY = coords.y - dragOffsetY;
+           newX = Math.max(0, Math.min(newX, parentRect.width - floatingPad.offsetWidth));
+           newY = Math.max(0, Math.min(newY, parentRect.height - floatingPad.offsetHeight));
+           floatingPad.style.left = newX + 'px';
+           floatingPad.style.top = newY + 'px';
+           floatingPad.style.removeProperty('transform');
+           floatingPad.style.removeProperty('bottom');
+       }
+
+       function stopDrag() {
+           if (isDragging) {
+               isDragging = false;
+               floatingPad.style.transition = 'transform 0.3s ease';
+               dragHandle.style.cursor = 'grab';
+           }
+       }
+       
+       dragHandle.addEventListener('mousedown', startDrag);
+       window.addEventListener('mousemove', onDrag);
+       window.addEventListener('mouseup', stopDrag);
+       dragHandle.addEventListener('touchstart', startDrag, { passive: false });
+       window.addEventListener('touchmove', onDrag, { passive: false });
+       window.addEventListener('touchend', stopDrag);
+
+       // --- Magnified Transfer Logic ---
+       function transferSegment() {
+           if (!isZoomPadVisible) toggleZoomPad(true);
+           
+           const inkBox = getInkBoundingBox(zoomCtx, zoomCanvas);
+           let advanceDistance;
+           
+           if (!inkBox.hasInk) {
+               advanceDistance = PADDING_MAIN * 2;
+           } else {
+               const inkWidthZoom = inkBox.maxX - inkBox.minX;
+               const inkWidthMain = inkWidthZoom / SCALE_FACTOR;
+               advanceDistance = inkWidthMain + PADDING_MAIN;
+           }
+
+           let nextDrawX = currentDrawX + advanceDistance;
+           let nextDrawY = currentDrawY;
+           
+           if (nextDrawX > LINE_END_X) {
+               nextDrawY += LINE_HEIGHT;
+               nextDrawX = LEFT_MARGIN;
+               if (nextDrawY + LINE_HEIGHT > mainCanvas.height) {
+                   updateStatus("End of page reached.", true);
+                   return;
+               }
+           }
+
+           const destinationY = currentDrawY + (LINE_HEIGHT - DESTINATION_HEIGHT) / 2;
+
+           if (inkBox.hasInk) {
+               mainCtx.globalCompositeOperation = 'source-over';
+               mainCtx.drawImage(
+                   zoomCanvas,
+                   inkBox.minX, 0, inkBox.maxX - inkBox.minX, zoomCanvas.height,
+                   currentDrawX, destinationY, (inkBox.maxX - inkBox.minX) / SCALE_FACTOR, DESTINATION_HEIGHT
+               );
+           }
+           
+           currentDrawY = nextDrawY;
+           currentDrawX = nextDrawX;
+
+           clearCanvas(zoomCtx, '#f9f9ff');
+           zoomPenMode = 'pen';
+           zoomEraserButton.classList.remove('active');
+           autoScrollToCursor();
+           updateStatus(`Cursor moved to X=${Math.round(currentDrawX)}, Y=${currentDrawY}.`);
+       }
+       
+       // --- Tap-to-Start Cursor Logic ---
+       cursorCanvas.addEventListener('click', (e) => {
+           const canvasRect = cursorCanvas.getBoundingClientRect();
+           const clickX = e.clientX - canvasRect.left;
+           const clickYRelative = e.clientY - canvasRect.top;
+           const clickYAbsolute = clickYRelative + scrollContainer.scrollTop;
+           let newX = clickX + scrollContainer.scrollLeft;
+           let newLineY = Math.floor((clickYAbsolute - TOP_PADDING) / LINE_HEIGHT) * LINE_HEIGHT + TOP_PADDING;
+           
+           if (newLineY < TOP_PADDING) newLineY = TOP_PADDING;
+           if (newLineY + LINE_HEIGHT > cursorCanvas.height) newLineY = cursorCanvas.height - LINE_HEIGHT;
+           if (newX < LEFT_MARGIN) newX = LEFT_MARGIN;
+           if (newX > LINE_END_X) newX = LINE_END_X;
+           
+           currentDrawY = newLineY;
+           currentDrawX = newX;
+
+           if (!isZoomPadVisible) {
+               toggleZoomPad(true);
+           } else {
+               clearCanvas(zoomCtx, '#f9f9ff');
+           }
+           updateStatus(`Cursor moved. Ready to write.`);
+           drawCursor();
+       });
+
+       // --- Resizing and Initialization ---
+       function initializeCanvasDimensions() {
+            const zoomContainer = document.getElementById('zoom-pad-container');
+            const zoomRect = zoomContainer.getBoundingClientRect();
+            if (zoomRect.width > 0) {
+                zoomCanvas.width = zoomRect.width - 24;
+            }
+            const appContainerHeight = document.querySelector('.app-container').clientHeight;
+            const headerHeight = document.querySelector('.app-header').clientHeight;
+            const toolsHeight = document.getElementById('tools-container').clientHeight;
+            const mainViewHeader = document.querySelector('#main-view-container h2').clientHeight;
+            const paddingHeight = 24;
+            const availableHeight = appContainerHeight - headerHeight - toolsHeight - paddingHeight;
+            scrollContainer.style.height = (availableHeight - mainViewHeader - 15) + 'px';
+            autoScrollToCursor();
+       }
+
+       // --- Event Handlers ---
+       nextSegmentButton.addEventListener('click', transferSegment);
+       hidePadButton.addEventListener('click', () => toggleZoomPad(false));
+       showPadButton.addEventListener('click', () => toggleZoomPad(true));
+
+       document.getElementById('pen-selector').addEventListener('click', (e) => {
+           const button = e.target.closest('[data-color]');
+           if (!button) return;
+           zoomPenMode = 'pen';
+           zoomEraserButton.classList.remove('active');
+           document.querySelectorAll('#pen-selector .tool-button').forEach(btn => btn.classList.remove('active'));
+           zoomPenColor = button.dataset.color;
+           button.classList.add('active');
+           updateStatus(`Pen color changed.`);
+       });
+       
+       zoomEraserButton.addEventListener('click', () => {
+           if (zoomPenMode === 'eraser') {
+               zoomPenMode = 'pen';
+               zoomEraserButton.classList.remove('active');
+               document.querySelector('[data-color="#000000"]').classList.add('active');
+               zoomPenColor = '#000000';
+               updateStatus('Switched to Pen mode.');
+           } else {
+               zoomPenMode = 'eraser';
+               zoomEraserButton.classList.add('active');
+               document.querySelectorAll('#pen-selector .tool-button').forEach(btn => btn.classList.remove('active'));
+               updateStatus('Eraser Mode Active.');
+           }
+       });
+
+       document.getElementById('clearButton').addEventListener('click', () => {
+           clearCanvas(mainCtx);
+           clearCanvas(zoomCtx, '#f9f9ff');
+           clearCanvas(cursorCtx);
+           currentDrawX = LEFT_MARGIN;
+           currentDrawY = TOP_PADDING;
+           autoScrollToCursor();
+           updateStatus('Note cleared. Start writing!');
+       });
+
+       // --- Local Save Functionality ---
+       function toggleSaveLoading(isLoading) {
+           saveButton.disabled = isLoading;
+           saveText.textContent = isLoading ? 'Saving...' : 'Save Note as Image';
+           saveLoader.classList.toggle('hidden', !isLoading);
+       }
+
+       function saveNote() {
+           toggleSaveLoading(true);
+
+           try {
+               const finalSaveCanvas = document.createElement('canvas');
+               finalSaveCanvas.width = mainCanvas.width;
+               finalSaveCanvas.height = mainCanvas.height;
+               const finalSaveCtx = finalSaveCanvas.getContext('2d');
+               
+               drawRuledLines(finalSaveCtx);
+               finalSaveCtx.drawImage(mainCanvas, 0, 0);
+
+               const base64Image = finalSaveCanvas.toDataURL('image/png');
+               
+               const link = document.createElement('a');
+               const timestamp = new Date().toISOString().replace(/:/g, '-');
+               link.download = `Handwritten-Note-${timestamp}.png`;
+               link.href = base64Image;
+               document.body.appendChild(link);
+               link.click();
+               document.body.removeChild(link);
+               
+               updateStatus('Note downloaded successfully!');
+           } catch (error) {
+               console.error("Error saving note: ", error);
+               updateStatus('Error saving note. Check console.', true);
+           } finally {
+               toggleSaveLoading(false);
+           }
+       }
+       saveButton.addEventListener('click', saveNote);
+
+       // Main execution flow
+       window.onload = () => {
+           clearCanvas(mainCtx);
+           clearCanvas(zoomCtx, '#f9f9ff');
+           clearCanvas(cursorCtx);
+
+           initializeCanvasDimensions();
+           window.addEventListener('resize', initializeCanvasDimensions);
+           
+           if ('serviceWorker' in navigator) {
+               navigator.serviceWorker.register('sw.js')
+                   .then(registration => {
+                       console.log('Service Worker registered with scope:', registration.scope);
+                       updateStatus('App is ready and works offline!');
+                   })
+                   .catch(error => {
+                       console.error('Service Worker registration failed:', error);
+                       updateStatus('App is ready (offline mode failed).');
+                   });
+           } else {
+                updateStatus('Ready to write.');
+           }
+       };
+   </script>
+</body>
+</html>
